@@ -1,0 +1,406 @@
+{
+    "_comment": "Pattern catalog for git_diff_classifier. Add new entries as new change types are discovered.",
+    "_format": {
+        "id": "Short identifier (P1, P2, etc.)",
+        "name": "Human-readable name",
+        "safe": "true = auto-stage, false = do not stage, null = needs review",
+        "detection": {
+            "method": "One of: string_match, line_count, json_field, regex",
+            "rules": "Detection-method-specific rules (see examples below)"
+        },
+        "description": "What this change pattern looks like",
+        "error_doc": "If safe=false, path to known_errors/ doc (optional)"
+    },
+    "patterns": [
+        {
+            "id": "P1",
+            "name": "unicode_encoding",
+            "safe": true,
+            "description": "UTF-8 literal bytes (curly apostrophe, em-dash) converted to JSON \\uXXXX escapes",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["\\u2019", "\\u2014"],
+                "removed_contains": ["\u2019", "\u2014"],
+                "no_other_changes": true
+            }
+        },
+        {
+            "id": "P2",
+            "name": "lich_whitespace",
+            "safe": true,
+            "description": "Lich Abilities sidebar: newline between **Darkvision** and **Saving Throws** collapsed",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["**Darkvision**  \\n **Saving Throws**"],
+                "added_contains": ["**Darkvision** **Saving Throws**"]
+            }
+        },
+        {
+            "id": "P3",
+            "name": "double_newline_collapse",
+            "safe": true,
+            "description": "Double newline \\n  \\n collapsed to single \\n in text fields",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\\n  \\n"],
+                "added_contains": ["\\n"],
+                "no_other_changes": true
+            }
+        },
+        {
+            "id": "P4",
+            "name": "image_rename",
+            "safe": true,
+            "description": "Image filename updated (.png to .webp or name corrected)",
+            "detection": {
+                "method": "json_field",
+                "field": "image",
+                "change_type": "value_change"
+            }
+        },
+        {
+            "id": "P5",
+            "name": "empty_damage_type_fix",
+            "safe": true,
+            "description": "Empty damage_type field filled with correct type",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\"damage_type\": \"\""],
+                "added_must_not_contain": ["\"damage_type\": \"\""]
+            }
+        },
+        {
+            "id": "P6",
+            "name": "recall_knowledge_reorder",
+            "safe": true,
+            "description": "Recall Knowledge entries reordered (Spirit/Undead swap, aonid updates)",
+            "detection": {
+                "method": "string_match",
+                "any_contains": ["Recall Knowledge", "aonid"],
+                "typical_line_counts": {"added": [5, 20], "removed": [5, 20]}
+            }
+        },
+        {
+            "id": "P7",
+            "name": "degree_of_success_merge",
+            "safe": true,
+            "description": "Separate Critical Success/Success/Failure/Critical Failure ability blocks merged into inline fields",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["critical_success", "critical_failure"],
+                "removed_contains": ["\"name\": \"Critical Success\""]
+            }
+        },
+        {
+            "id": "P8",
+            "name": "trigger_effect_merge",
+            "safe": true,
+            "description": "Separate trigger/effect abilities merged into parent ability fields",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\"name\": \"Trigger\"", "\"name\": \"Effect\""],
+                "added_contains": ["\"trigger\":", "\"effect\":"]
+            }
+        },
+        {
+            "id": "P9",
+            "name": "affliction_stage_split",
+            "safe": true,
+            "description": "Single affliction text containing all stages split into separate affliction_stage objects",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["affliction_stage", "\"name\": \"Stage"],
+                "net_positive": true
+            }
+        },
+        {
+            "id": "P10",
+            "name": "sidebar_addition",
+            "safe": true,
+            "description": "New sidebar sections (lore, advice, rules) added as pure additions",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["\"subtype\": \"sidebar\""],
+                "net_positive": true
+            }
+        },
+        {
+            "id": "P11",
+            "name": "content_addition",
+            "safe": true,
+            "description": "New family/building-block content sections added",
+            "detection": {
+                "method": "string_match",
+                "net_positive": true,
+                "any_added_contains": ["\"subtype\": \"sidebar\"", "\"subtype\": \"ability\"", "building-block"]
+            }
+        },
+        {
+            "id": "P12",
+            "name": "errata_version_update",
+            "safe": true,
+            "description": "Errata version number updated (e.g., 1.1 to 2.0)",
+            "detection": {
+                "method": "string_match",
+                "context_contains": ["errata"],
+                "typical_line_counts": {"added": [1, 3], "removed": [1, 3]}
+            }
+        },
+        {
+            "id": "P13",
+            "name": "text_correction",
+            "safe": true,
+            "description": "Text typos or name corrections in ability/description text",
+            "detection": { "method": "manual" }
+        },
+        {
+            "id": "P14",
+            "name": "license_field_reorder",
+            "safe": true,
+            "description": "License text field reordered within JSON (no content change)",
+            "detection": {
+                "method": "string_match",
+                "context_contains": ["license"],
+                "no_other_changes": true
+            }
+        },
+        {
+            "id": "P15",
+            "name": "empty_link_removal",
+            "safe": true,
+            "description": "Empty link objects removed",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\"name\": \"\"", "\"alt\": \"\""],
+                "net_negative": true
+            }
+        },
+        {
+            "id": "P16",
+            "name": "empty_text_removal",
+            "safe": true,
+            "description": "Empty text fields removed from abilities",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\"text\": \"\""],
+                "no_other_changes": true
+            }
+        },
+        {
+            "id": "P17",
+            "name": "leading_space_fix",
+            "safe": true,
+            "description": "Leading space removed from DC name",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\" DC"],
+                "added_contains": ["\"DC"]
+            }
+        },
+        {
+            "id": "P18",
+            "name": "duplicate_text_fix",
+            "safe": true,
+            "description": "Doubled text fixed (e.g., darkvisiondarkvision)",
+            "detection": { "method": "manual" }
+        },
+        {
+            "id": "P19",
+            "name": "resist_prefix_fix",
+            "safe": true,
+            "description": "Resist: prefix removed from resistance name",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\"Resist: "],
+                "no_other_changes": true
+            }
+        },
+        {
+            "id": "P20",
+            "name": "spell_name_class_prefix_lost",
+            "safe": false,
+            "description": "Class prefix lost from spell type name (Divine Cleric Domain Spells to Cleric Domain Spells)",
+            "error_doc": "HTML fix needed: re-add class prefix to spell heading",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["Divine Cleric", "Primal Druid"],
+                "added_contains": ["Cleric Domain", "Druid Order"]
+            }
+        },
+        {
+            "id": "P21",
+            "name": "trait_addition",
+            "safe": true,
+            "description": "Missing trait added to creature traits list",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["\"game-obj\": \"Traits\""],
+                "net_positive": true
+            }
+        },
+        {
+            "id": "P22",
+            "name": "broken_unicode_fix",
+            "safe": true,
+            "description": "Broken unicode sequences fixed",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\\u00c3"],
+                "no_other_changes": true
+            }
+        },
+        {
+            "id": "P24",
+            "name": "image_addition",
+            "safe": true,
+            "description": "New image block added to creature",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["\"type\": \"image\"", "\"game-obj\": \"Monster\""],
+                "net_positive": true
+            }
+        },
+        {
+            "id": "B",
+            "name": "map_bonus_removed",
+            "safe": false,
+            "description": "MAP bonus values stripped from attacks",
+            "error_doc": "known_errors/map_bonus.md",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\"aonid\": 322"]
+            }
+        },
+        {
+            "id": "E",
+            "name": "magical_tradition_trait",
+            "safe": true,
+            "description": "Primal/Arcane trait replaced with Magical Tradition template trait",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["Magical Tradition"]
+            }
+        },
+        {
+            "id": "G",
+            "name": "source_book_change",
+            "safe": true,
+            "description": "Source book updated (Bestiary X to Monster Core 2, CRB to Player Core)",
+            "detection": {
+                "method": "string_match",
+                "any_contains": ["Monster Core", "Player Core", "NPC Core"]
+            }
+        },
+        {
+            "id": "L1",
+            "name": "rarity_dc_update",
+            "safe": true,
+            "description": "Rarity changed Common to Uncommon with corresponding RK DC+2",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["Uncommon"],
+                "removed_contains": ["Common"]
+            }
+        },
+        {
+            "id": "L2",
+            "name": "conditional_dc_lost",
+            "safe": false,
+            "description": "Conditional DC parentheticals lost from saving_throw modifiers",
+            "error_doc": "known_errors/conditional_dc_parse.md",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["modifiers"],
+                "context_contains": ["saving_throw"]
+            }
+        },
+        {
+            "id": "M_nosferatu",
+            "name": "nosferatu_duplicate",
+            "safe": false,
+            "description": "Duplicate Vampire Nosferatu added to related groups",
+            "error_doc": "known_errors/nosferatu_duplicate.md",
+            "detection": {
+                "method": "file_list",
+                "files": ["minister_of_tumult", "provincial_jiang-shi", "vetalarana_emergent", "vetalarana_manipulator", "strigoi_progenitor"]
+            }
+        },
+        {
+            "id": "M_parse",
+            "name": "parse_error_misc",
+            "safe": false,
+            "description": "Various parse errors: wrong level/DC/MAP values, broken text splits",
+            "error_doc": "known_errors/parse_errors_misc.md",
+            "detection": {
+                "method": "file_list",
+                "files": ["hhruklaz", "unrisen", "bristle_boar", "primal_warden_of_zibik", "dwarf_general"]
+            }
+        },
+        {
+            "id": "N",
+            "name": "content_removal",
+            "safe": null,
+            "description": "Large content removed (50+ lines). Must verify against HTML source.",
+            "detection": {
+                "method": "string_match",
+                "net_negative": true,
+                "min_removed": 50
+            }
+        },
+        {
+            "id": "RK_structured_lost",
+            "name": "recall_knowledge_to_text",
+            "safe": false,
+            "description": "Structured Recall Knowledge data moved into inline sidebar text",
+            "detection": {
+                "method": "string_match",
+                "removed_contains": ["\"subtype\": \"knowledge\""],
+                "added_contains": ["Recall Knowledge"]
+            }
+        },
+        {
+            "id": "SPACE_IN_WORD",
+            "name": "space_inserted_in_word",
+            "safe": false,
+            "description": "Space inserted in middle of hyphenated term (e.g., 20-foot to 20- foot)",
+            "detection": {
+                "method": "regex",
+                "added_pattern": "\\d+- \\w+"
+            }
+        },
+        {
+            "id": "AONID_CHANGE",
+            "name": "aonid_changed",
+            "safe": null,
+            "description": "Top-level aonid changed. May indicate parser resolved to different AoN page entirely.",
+            "detection": {
+                "method": "json_field",
+                "field": "aonid",
+                "change_type": "value_change",
+                "top_level": true
+            }
+        },
+        {
+            "id": "REMASTER",
+            "name": "legacy_to_remaster",
+            "safe": true,
+            "description": "Full legacy to remastered conversion: edition flip, alignment removal, trait aonid updates, language renames, license OGL to ORC",
+            "detection": {
+                "method": "string_match",
+                "added_contains": ["\"edition\": \"remastered\""],
+                "removed_contains": ["\"edition\": \"legacy\""]
+            }
+        },
+        {
+            "id": "ABILITY_RECLASSIFY",
+            "name": "ability_type_reclassification",
+            "safe": true,
+            "description": "Ability moved between automatic/reactive/offensive/interaction categories",
+            "detection": {
+                "method": "string_match",
+                "any_contains": ["automatic_abilities", "reactive_abilities", "offensive_abilities", "interaction_abilities"],
+                "context_contains": ["ability_type"]
+            }
+        }
+    ]
+}

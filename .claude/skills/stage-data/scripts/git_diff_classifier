@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Classify unstaged modified files by their diff patterns.
+
+Usage:
+  git_diff_classifier [--patterns FILE] [--safe-only] [--unsafe-only] [--unknown-only] [path]
+
+Reads the pattern catalog (patterns.json) and classifies each unstaged modified
+file into one or more known categories. Output is JSON (one object per line).
+
+Options:
+  --patterns FILE   Path to patterns.json (default: auto-detect from script location)
+  --safe-only       Only output files where ALL matched patterns are safe
+  --unsafe-only     Only output files where ANY matched pattern is unsafe
+  --unknown-only    Only output files that matched no patterns
+  --summary         Print summary table instead of per-file JSON
+  path              Limit to files under this path
+
+Output (JSON lines):
+  {"file": "path/to/file.json", "categories": ["P1", "P6"], "safe": true, "names": ["unicode_encoding", "recall_knowledge_reorder"]}
+
+Adding new patterns:
+  Edit references/patterns.json. Each pattern needs: id, name, safe, description, detection.
+  Detection methods: string_match (check diff lines), file_list (match by filename), regex, manual.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+
+def load_patterns(patterns_path):
+    with open(patterns_path) as f:
+        data = json.load(f)
+    return data["patterns"]
+
+
+def get_unstaged_files(path=None):
+    cmd = ["git", "diff", "--name-only"]
+    if path:
+        cmd += ["--", path]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return [f for f in result.stdout.strip().split("\n") if f and f.endswith(".json")]
+
+
+def get_diff(filepath):
+    result = subprocess.run(
+        ["git", "diff", "--", filepath], capture_output=True, text=True
+    )
+    return result.stdout
+
+
+def extract_lines(diff_text):
+    added = []
+    removed = []
+    context = []
+    for line in diff_text.split("\n"):
+        if line.startswith("+") and not line.startswith("+++"):
+            added.append(line[1:])
+        elif line.startswith("-") and not line.startswith("---"):
+            removed.append(line[1:])
+        elif not line.startswith("@@") and not line.startswith("diff ") and not line.startswith("index "):
+            context.append(line)
+    return added, removed, context
+
+
+def check_string_match(detection, added, removed, context, added_text, removed_text, context_text):
+    """Check if diff matches string_match detection rules."""
+    score = 0
+    checks = 0
+
+    if "added_contains" in detection:
+        checks += 1
+        if all(s in added_text for s in detection["added_contains"]):
+            score += 1
+
+    if "removed_contains" in detection:
+        checks += 1
+        if all(s in removed_text for s in detection["removed_contains"]):
+            score += 1
+
+    if "any_contains" in detection:
+        checks += 1
+        all_text = added_text + removed_text
+        if any(s in all_text for s in detection["any_contains"]):
+            score += 1
+
+    if "any_added_contains" in detection:
+        checks += 1
+        if any(s in added_text for s in detection["any_added_contains"]):
+            score += 1
+
+    if "context_contains" in detection:
+        checks += 1
+        all_text = added_text + removed_text + context_text
+        if any(s in all_text for s in detection["context_contains"]):
+            score += 1
+
+    if "added_must_not_contain" in detection:
+        checks += 1
+        if not any(s in added_text for s in detection["added_must_not_contain"]):
+            score += 1
+
+    if "net_positive" in detection and detection["net_positive"]:
+        checks += 1
+        if len(added) > len(removed):
+            score += 1
+
+    if "net_negative" in detection and detection["net_negative"]:
+        checks += 1
+        if len(removed) > len(added):
+            score += 1
+
+    if "min_removed" in detection:
+        checks += 1
+        if len(removed) >= detection["min_removed"]:
+            score += 1
+
+    if "no_other_changes" in detection and detection["no_other_changes"]:
+        # This is a soft hint, don't make it required
+        pass
+
+    return checks > 0 and score == checks
+
+
+def check_file_list(detection, filepath):
+    """Check if file matches by filename."""
+    basename = os.path.splitext(os.path.basename(filepath))[0]
+    return basename in detection.get("files", [])
+
+
+def check_regex(detection, added_text):
+    """Check if added lines match a regex pattern."""
+    pattern = detection.get("added_pattern", "")
+    if pattern and re.search(pattern, added_text):
+        return True
+    return False
+
+
+def classify_file(filepath, patterns, diff_text=None):
+    """Classify a single file against all patterns. Returns list of matching pattern IDs."""
+    if diff_text is None:
+        diff_text = get_diff(filepath)
+
+    added, removed, context = extract_lines(diff_text)
+    added_text = "\n".join(added)
+    removed_text = "\n".join(removed)
+    context_text = "\n".join(context)
+
+    matches = []
+
+    for pattern in patterns:
+        detection = pattern.get("detection", {})
+        method = detection.get("method", "manual")
+
+        matched = False
+        if method == "string_match":
+            matched = check_string_match(
+                detection, added, removed, context,
+                added_text, removed_text, context_text
+            )
+        elif method == "file_list":
+            matched = check_file_list(detection, filepath)
+        elif method == "regex":
+            matched = check_regex(detection, added_text)
+        elif method == "json_field":
+            field = detection.get("field", "")
+            if field and detection.get("top_level"):
+                # Check for top-level field change: line like '    "aonid": 123,'
+                # with exactly 4 spaces indent (top-level JSON field)
+                for line in added + removed:
+                    stripped = line.lstrip()
+                    indent = len(line) - len(stripped)
+                    if indent == 4 and stripped.startswith(f'"{field}"'):
+                        matched = True
+                        break
+            elif field and (field in added_text or field in removed_text):
+                matched = True
+        # manual patterns never auto-match
+
+        if matched:
+            matches.append(pattern)
+
+    return matches
+
+
+def determine_safety(matches):
+    """Determine overall safety from matched patterns.
+
+    Returns: True (all safe), False (any unsafe), None (unknown/mixed)
+    """
+    if not matches:
+        return None
+
+    has_unsafe = any(p["safe"] is False for p in matches)
+    has_unknown = any(p["safe"] is None for p in matches)
+
+    if has_unsafe:
+        return False
+    if has_unknown:
+        return None
+    return True
+
+
+def main():
+    # Parse args
+    patterns_path = None
+    safe_only = False
+    unsafe_only = False
+    unknown_only = False
+    summary = False
+    path = None
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--patterns":
+            patterns_path = args[i + 1]
+            i += 2
+        elif args[i] == "--safe-only":
+            safe_only = True
+            i += 1
+        elif args[i] == "--unsafe-only":
+            unsafe_only = True
+            i += 1
+        elif args[i] == "--unknown-only":
+            unknown_only = True
+            i += 1
+        elif args[i] == "--summary":
+            summary = True
+            i += 1
+        else:
+            path = args[i]
+            i += 1
+
+    # Find patterns file
+    if not patterns_path:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        patterns_path = os.path.join(script_dir, "..", "references", "patterns.json")
+        if not os.path.exists(patterns_path):
+            # Try relative to cwd
+            patterns_path = os.path.join("references", "patterns.json")
+
+    patterns = load_patterns(patterns_path)
+    files = get_unstaged_files(path)
+
+    if not files:
+        print("No unstaged modified JSON files found.", file=sys.stderr)
+        sys.exit(0)
+
+    results = []
+    for filepath in files:
+        diff_text = get_diff(filepath)
+        matches = classify_file(filepath, patterns, diff_text)
+        safety = determine_safety(matches)
+
+        result = {
+            "file": filepath,
+            "categories": [m["id"] for m in matches],
+            "names": [m["name"] for m in matches],
+            "safe": safety,
+        }
+
+        if safe_only and safety is not True:
+            continue
+        if unsafe_only and safety is not False:
+            continue
+        if unknown_only and matches:
+            continue
+
+        results.append(result)
+
+    if summary:
+        # Print summary table
+        safe_count = sum(1 for r in results if r["safe"] is True)
+        unsafe_count = sum(1 for r in results if r["safe"] is False)
+        unknown_count = sum(1 for r in results if r["safe"] is None)
+
+        # Count by category
+        cat_counts = {}
+        for r in results:
+            for cat in r["categories"]:
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        if not r["categories"]:
+            cat_counts["UNKNOWN"] = cat_counts.get("UNKNOWN", 0) + 1
+
+        print(f"Total: {len(results)} files")
+        print(f"  Safe:    {safe_count}")
+        print(f"  Unsafe:  {unsafe_count}")
+        print(f"  Unknown: {unknown_count}")
+        print()
+        print("By category:")
+        for cat, count in sorted(cat_counts.items()):
+            p = next((p for p in patterns if p["id"] == cat), None)
+            name = p["name"] if p else "unclassified"
+            safe = p["safe"] if p else None
+            marker = "+" if safe is True else "-" if safe is False else "?"
+            print(f"  [{marker}] {cat:20s} {count:4d}  {name}")
+    else:
+        for result in results:
+            print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

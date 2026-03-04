@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Stage files classified as safe by git_diff_classifier.
+
+Usage:
+  git_stage_safe [--patterns FILE] [--dry-run] [path]
+
+Runs the classifier, then stages all files where every matched pattern is safe.
+Files with no matches or any unsafe/unknown patterns are skipped.
+
+Options:
+  --patterns FILE   Path to patterns.json
+  --dry-run         Show what would be staged without staging
+  path              Limit to files under this path
+"""
+import json
+import os
+import subprocess
+import sys
+
+# Import classifier from same directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, script_dir)
+import types
+_classifier = types.ModuleType("git_diff_classifier")
+with open(os.path.join(script_dir, "git_diff_classifier")) as _f:
+    exec(compile(_f.read(), "git_diff_classifier", "exec"), _classifier.__dict__)
+classify_file = _classifier.classify_file
+determine_safety = _classifier.determine_safety
+get_unstaged_files = _classifier.get_unstaged_files
+get_diff = _classifier.get_diff
+load_patterns = _classifier.load_patterns
+
+
+def main():
+    patterns_path = None
+    dry_run = False
+    path = None
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--patterns":
+            patterns_path = args[i + 1]
+            i += 2
+        elif args[i] == "--dry-run":
+            dry_run = True
+            i += 1
+        else:
+            path = args[i]
+            i += 1
+
+    if not patterns_path:
+        patterns_path = os.path.join(script_dir, "..", "references", "patterns.json")
+
+    patterns = load_patterns(patterns_path)
+    files = get_unstaged_files(path)
+
+    if not files:
+        print("No unstaged modified JSON files found.")
+        return
+
+    to_stage = []
+    skipped_unsafe = []
+    skipped_unknown = []
+
+    for filepath in files:
+        diff_text = get_diff(filepath)
+        matches = classify_file(filepath, patterns, diff_text)
+        safety = determine_safety(matches)
+
+        if safety is True:
+            to_stage.append((filepath, [m["id"] for m in matches]))
+        elif safety is False:
+            skipped_unsafe.append((filepath, [m["id"] for m in matches]))
+        else:
+            skipped_unknown.append((filepath, [m["id"] for m in matches] if matches else ["UNCLASSIFIED"]))
+
+    if dry_run:
+        print(f"Would stage {len(to_stage)} files:")
+        for f, cats in to_stage:
+            print(f"  + {f}  [{', '.join(cats)}]")
+        print(f"\nWould skip {len(skipped_unsafe)} unsafe:")
+        for f, cats in skipped_unsafe:
+            print(f"  - {f}  [{', '.join(cats)}]")
+        print(f"\nWould skip {len(skipped_unknown)} unknown:")
+        for f, cats in skipped_unknown:
+            print(f"  ? {f}  [{', '.join(cats)}]")
+    else:
+        if to_stage:
+            file_list = [f for f, _ in to_stage]
+            # Stage in batches to avoid arg length limits
+            batch_size = 50
+            for i in range(0, len(file_list), batch_size):
+                batch = file_list[i:i + batch_size]
+                subprocess.run(["git", "add", "--"] + batch, check=True)
+
+            print(f"Staged {len(to_stage)} files")
+            for f, cats in to_stage:
+                print(f"  + {f}  [{', '.join(cats)}]")
+
+        if skipped_unsafe:
+            print(f"\nSkipped {len(skipped_unsafe)} unsafe:")
+            for f, cats in skipped_unsafe:
+                print(f"  - {f}  [{', '.join(cats)}]")
+
+        if skipped_unknown:
+            print(f"\nSkipped {len(skipped_unknown)} unknown/unclassified:")
+            for f, cats in skipped_unknown:
+                print(f"  ? {f}  [{', '.join(cats)}]")
+
+
+if __name__ == "__main__":
+    main()

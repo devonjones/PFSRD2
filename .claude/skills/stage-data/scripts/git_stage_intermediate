@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""Stage only specific changes from a file using the intermediate-version technique.
+
+Usage:
+  git_stage_intermediate --include CAT1,CAT2 [--exclude CAT3] [--patterns FILE] file.json
+  git_stage_intermediate --apply-fn FUNCTION file.json
+
+Builds an intermediate JSON version: starts from HEAD, applies only the changes
+that match the included categories, and stages that intermediate version.
+The working tree file is left untouched.
+
+This is the hunk-staging equivalent for JSON files. Instead of parsing unified
+diff hunks (which is fragile for JSON), it works at the JSON data level:
+1. Load old (HEAD) and new (working tree) versions
+2. Diff them field-by-field
+3. Apply only changes matching included categories
+4. Stage the intermediate version via git hash-object + update-index
+
+Options:
+  --include CAT1,CAT2   Only apply changes matching these pattern categories
+  --exclude CAT3        Do not apply changes matching these categories
+  --apply-fn FUNCTION   Apply a named transform function instead of category matching
+  --patterns FILE       Path to patterns.json
+  --dry-run             Show what would change without staging
+
+Built-in transform functions (--apply-fn):
+  license_reorder       Reorder keys to match new ordering + apply new license (same as git_stage_license_only.py)
+  empty_text_removal    Remove "text": "" fields
+  trigger_effect_merge  Apply trigger/effect structural merges
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+
+def get_old_json(filepath):
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{filepath}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return json.loads(result.stdout)
+
+
+def get_new_json(filepath):
+    with open(filepath) as f:
+        return json.load(f)
+
+
+def get_trailing_newline(filepath):
+    with open(filepath, "rb") as f:
+        content = f.read()
+    return content.endswith(b"\n")
+
+
+def reorder_keys(old, new):
+    """Recursively reorder old's keys to match new's ordering."""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return old
+    result = {}
+    for k in new:
+        if k in old:
+            result[k] = reorder_keys(old[k], new[k])
+    for k in old:
+        if k not in new:
+            result[k] = old[k]
+    return result
+
+
+def deep_merge_field(old_obj, new_obj, field_path):
+    """Apply a specific field change from new_obj to old_obj."""
+    if not field_path:
+        return new_obj
+
+    key = field_path[0]
+    rest = field_path[1:]
+
+    if isinstance(old_obj, dict):
+        result = dict(old_obj)
+        if key in new_obj if isinstance(new_obj, dict) else False:
+            if rest:
+                result[key] = deep_merge_field(
+                    result.get(key), new_obj[key], rest
+                )
+            else:
+                result[key] = new_obj[key]
+        return result
+
+    return old_obj
+
+
+def apply_license_reorder(old, new):
+    """Reorder keys + apply new license."""
+    result = reorder_keys(old, new)
+    if "license" in new:
+        result["license"] = new["license"]
+    return result
+
+
+def apply_empty_text_removal(old, new):
+    """Remove empty text fields, matching new's structure."""
+    return _remove_empty_text(reorder_keys(old, new))
+
+
+def _remove_empty_text(obj):
+    if isinstance(obj, dict):
+        result = {}
+        for k, v in obj.items():
+            if k == "text" and v == "":
+                continue
+            result[k] = _remove_empty_text(v)
+        return result
+    elif isinstance(obj, list):
+        return [_remove_empty_text(item) for item in obj]
+    return obj
+
+
+def apply_trigger_effect_merge(old, new):
+    """Apply trigger/effect merges from new to old.
+
+    This is complex because the structural change involves:
+    1. Adding trigger/effect/action_type fields to a parent ability
+    2. Removing separate Trigger/Effect child abilities
+    We take the new structure for any ability that gained trigger/effect fields.
+    """
+    result = reorder_keys(old, new)
+    # Walk the structure looking for abilities that gained trigger/effect
+    return _merge_trigger_effect(result, new)
+
+
+def _merge_trigger_effect(old_obj, new_obj):
+    if isinstance(old_obj, dict) and isinstance(new_obj, dict):
+        result = {}
+        for k in new_obj:
+            if k in old_obj:
+                result[k] = _merge_trigger_effect(old_obj[k], new_obj[k])
+            else:
+                # New field - check if it's trigger/effect related
+                if k in ("trigger", "effect", "action_type"):
+                    result[k] = new_obj[k]
+        # Keep old-only keys
+        for k in old_obj:
+            if k not in new_obj:
+                result[k] = old_obj[k]
+        return result
+    elif isinstance(old_obj, list) and isinstance(new_obj, list):
+        # For lists, use new if trigger/effect abilities were removed
+        old_names = {
+            item.get("name") for item in old_obj
+            if isinstance(item, dict) and "name" in item
+        }
+        new_names = {
+            item.get("name") for item in new_obj
+            if isinstance(item, dict) and "name" in item
+        }
+        removed = old_names - new_names
+        if removed & {"Trigger", "Effect"}:
+            return new_obj
+        # Otherwise recurse
+        return [
+            _merge_trigger_effect(o, n) if i < len(new_obj) else o
+            for i, o in enumerate(old_obj)
+            for n in [new_obj[i] if i < len(new_obj) else o]
+        ]
+    return old_obj
+
+
+TRANSFORM_FUNCTIONS = {
+    "license_reorder": apply_license_reorder,
+    "empty_text_removal": apply_empty_text_removal,
+    "trigger_effect_merge": apply_trigger_effect_merge,
+}
+
+
+def stage_intermediate(filepath, intermediate_data, has_trailing_newline):
+    """Stage an intermediate version via git hash-object + update-index."""
+    text = json.dumps(intermediate_data, indent=4)
+    if has_trailing_newline:
+        text += "\n"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+        tmp.write(text)
+        tmp_path = tmp.name
+
+    try:
+        result = subprocess.run(
+            ["git", "hash-object", "-w", tmp_path],
+            capture_output=True, text=True, check=True,
+        )
+        blob_hash = result.stdout.strip()
+
+        ls_result = subprocess.run(
+            ["git", "ls-files", "-s", filepath],
+            capture_output=True, text=True,
+        )
+        mode = ls_result.stdout.split()[0] if ls_result.stdout else "100644"
+
+        subprocess.run(
+            ["git", "update-index", "--cacheinfo", f"{mode},{blob_hash},{filepath}"],
+            check=True,
+        )
+        return True
+    finally:
+        os.unlink(tmp_path)
+
+
+def main():
+    include_cats = []
+    exclude_cats = []
+    apply_fn = None
+    patterns_path = None
+    dry_run = False
+    filepath = None
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--include":
+            include_cats = args[i + 1].split(",")
+            i += 2
+        elif args[i] == "--exclude":
+            exclude_cats = args[i + 1].split(",")
+            i += 2
+        elif args[i] == "--apply-fn":
+            apply_fn = args[i + 1]
+            i += 2
+        elif args[i] == "--patterns":
+            patterns_path = args[i + 1]
+            i += 2
+        elif args[i] == "--dry-run":
+            dry_run = True
+            i += 1
+        else:
+            filepath = args[i]
+            i += 1
+
+    if not filepath:
+        print("Error: must specify a file", file=sys.stderr)
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+    old = get_old_json(filepath)
+    if old is None:
+        print(f"Error: {filepath} not in HEAD (new file?)", file=sys.stderr)
+        sys.exit(1)
+
+    new = get_new_json(filepath)
+    has_newline = get_trailing_newline(filepath)
+
+    if apply_fn:
+        if apply_fn not in TRANSFORM_FUNCTIONS:
+            print(f"Error: unknown transform function '{apply_fn}'", file=sys.stderr)
+            print(f"Available: {', '.join(TRANSFORM_FUNCTIONS.keys())}", file=sys.stderr)
+            sys.exit(1)
+
+        intermediate = TRANSFORM_FUNCTIONS[apply_fn](old, new)
+    else:
+        # Category-based: not yet implemented in full generality
+        # For now, fall back to applying all safe transforms
+        print("Error: category-based --include/--exclude not yet implemented.", file=sys.stderr)
+        print("Use --apply-fn instead.", file=sys.stderr)
+        sys.exit(1)
+
+    # Check if intermediate differs from old
+    old_text = json.dumps(old, indent=4)
+    int_text = json.dumps(intermediate, indent=4)
+    new_text = json.dumps(new, indent=4)
+
+    if old_text == int_text:
+        print(f"  skip (no matching changes): {filepath}")
+        return
+
+    if int_text == new_text:
+        if dry_run:
+            print(f"  would stage whole file: {filepath}")
+        else:
+            subprocess.run(["git", "add", filepath], check=True)
+            print(f"  staged whole file: {filepath}")
+        return
+
+    if dry_run:
+        print(f"  would stage intermediate: {filepath}")
+        # Show what changed
+        import difflib
+        diff = difflib.unified_diff(
+            old_text.splitlines(), int_text.splitlines(),
+            fromfile="HEAD", tofile="staged", lineterm=""
+        )
+        for line in list(diff)[:30]:
+            print(f"    {line}")
+    else:
+        stage_intermediate(filepath, intermediate, has_newline)
+        print(f"  staged intermediate: {filepath}")
+
+
+if __name__ == "__main__":
+    main()

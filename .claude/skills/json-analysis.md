@@ -101,6 +101,22 @@ After seeing the distribution, use `--value` to find files containing a specific
 # Look up field in output to find first file with that field
 ```
 
+### Staging files with complex multi-hunk diffs
+
+When a file has multiple independent changes (hunks), use hunk mode to match per-hunk:
+
+```bash
+# Every hunk must be -1 +5 with "usage" 3 times, require exactly 4 hunks
+../PFSRD2-Parser/bin/git_diff_filter --hunk -1 +5 usage:3 --hunk-count 4
+
+# Multiple patterns (any-of): each hunk matches one of the patterns
+# e.g., 1 access hunk + 4 usage hunks
+../PFSRD2-Parser/bin/git_diff_filter --hunk -2 +10 access:5 --hunk -1 +5 usage:3 --hunk-count 5
+
+# Stage them
+../PFSRD2-Parser/bin/git_diff_filter --hunk -1 +5 usage:3 --hunk-count 4 | xargs git add
+```
+
 ### Validating enum-like fields
 
 Fields with VERY_LOW or LOW cardinality should match schema enums. Compare the cardinality output against schema definitions to find invalid values.

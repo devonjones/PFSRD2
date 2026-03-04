@@ -55,6 +55,14 @@ Contains the scraped HTML from aonprd.com.
   - `Monsters/Monsters.aspx.ID_*.html` - Monster pages
   - `Traits/`, `Conditions/`, `Skills/`, etc. - Other content types
 
+## HTML Tag Rules
+
+**NEVER change `<b>` to `<strong>` in source HTML without asking the user first.** The `<b>` tag is excluded from the markdown validset for strategic fragility — if `<b>` appears in parsed text, it means the parser failed to extract structured content. The correct fix is usually to improve the parser. Only in rare cases where the bold text genuinely belongs in description (not as a title/label) should it be changed to `<strong>`, and only with the user's explicit approval.
+
+## Never Paper Over Errors
+
+**When a validation or assertion fails, fix the root cause — never skip, suppress, or add exceptions to make it pass.** Strategic fragility exists to surface real problems. If a check fails, it means something upstream needs fixing (parser logic, HTML structure, data routing). Bypassing the check (e.g., `if x: continue`, catching and ignoring exceptions, adding blanket allowances) hides the problem and causes silent data quality regressions. The only acceptable "exception" is when the check itself is wrong for a specific well-understood context (e.g., license text legitimately uses `<b>` tags) — and even then, the fix should be scoped as narrowly as possible (allow `<b>` only in license paths, not globally skip license validation).
+
 ## Core Philosophy: HTML Bugs vs Code Bugs
 
 **Critical distinction:**
@@ -112,15 +120,36 @@ git diff <file>             # Review specific changes
 
 **Important:** Only the files related to your fix should change. If you see unexpected changes, investigate before committing.
 
-## Error Handling
+## Error Handling & Fast Iteration
 
-Parser scripts log errors to `errors.pf2.<type>.log` files. If a parse fails:
+Parser scripts have a two-file error system for fast iteration:
 
-1. Check the error log
-2. Examine the problematic HTML file
-3. Fix the issue (HTML or code)
-4. Re-run the parser
-5. Errors file can be used to re-parse only failed items
+- `errors.pf2.<type>.log` - **Output**: failures from the last run (written by the script)
+- `errors.pf2.<type>` - **Input**: if this file exists, the script ONLY processes files listed in it (skips the full `ls` scan)
+
+### Iteration workflow
+
+1. **Seed an errors file** with a representative subset of files (or the user may provide one pre-made)
+2. **Run the parser** - it processes only those files, logging new failures to `.log`
+3. **Fix the code** based on errors
+4. **Promote failures for re-run**: `mv errors.pf2.<type>.log errors.pf2.<type>`
+5. **Repeat** until `.log` is empty (all files in the subset pass)
+6. **Delete the errors file** (`rm errors.pf2.<type>`) and run the full parser to catch any remaining issues across all files
+
+```bash
+# Example: iterating on traits
+cd PFSRD2-Parser/bin
+source dir.conf
+bash pf2_run_traits.sh          # runs only errors.pf2.trait entries
+# fix code...
+mv errors.pf2.trait.log errors.pf2.trait   # promote failures
+bash pf2_run_traits.sh          # re-run just the failures
+# when clean:
+rm errors.pf2.trait             # remove seed file
+bash pf2_run_traits.sh          # full run against all files
+```
+
+This is critical for parsers with many files (traits, creatures, equipment) where a full run takes minutes. Always use this pattern during development.
 
 ## Web Download Issues
 
@@ -245,3 +274,80 @@ Each has its own parser module and JSON schema.
 - Let cargo-culting go unchallenged
 
 **If something is over-engineered, say so directly. If there's a simpler path, push for it.**
+
+## Task Management
+
+Use `bd` (beads) instead of TaskCreate/TodoWrite for ALL task tracking. TaskCreate/TodoWrite disappear on compaction; beads persists in git.
+
+**Core commands:**
+- `bd ready` - See unblocked work
+- `bd create --title="task" --priority=2` - Create task (priority 0-4, 0=critical)
+- `bd update <id> --status=in_progress --claim` - Claim work (use `--claim` for explicit failure if already taken)
+- `bd update <id> --note "Progress update"` - Add progress note
+- `bd update <id> --desc "New description"` - Update description
+- `bd close <id> --reason="description"` - Complete task with context
+- `bd list --status=open` - All open issues
+- `bd dep add <issue> <depends-on>` - Add dependency (constraint-based, not sequential)
+- `bd sync` - Sync with git (REQUIRED at session end)
+
+**Do NOT use:**
+- TaskCreate, TaskUpdate, TaskList, TodoWrite - Use beads exclusively
+- `bd edit` - Opens interactive editor, unusable by AI. Use `bd update` flags instead
+
+For simple conversational work that doesn't need tracking, just work directly - not everything needs a ticket.
+
+### Surviving Compaction
+
+Beads is one of the few ways to maintain continuity after context compaction. Follow these patterns:
+
+**1. Session Start - Load Context**
+- Run `bd ready` to see available work
+- Run `bd show <id>` to read notes/context before starting
+- The session hook runs `bd prime` automatically, but explicitly checking helps
+
+**2. Write Rich Notes (Past Tense)**
+When closing or updating beads, document *what was decided* and *why*, not just "done":
+- BAD: "Fixed auth"
+- GOOD: "Implemented JWT tokens with 1hr expiry. Chose rotating refresh tokens over long-lived tokens for security. Login endpoint at /api/auth/login."
+
+This lets future sessions (post-compaction) reconstruct context.
+
+**3. Update at Milestones**
+Don't wait until completion - update beads at significant milestones:
+```bash
+bd update <id> --note "Completed schema changes. Next: update parser to match."
+```
+Creates breadcrumbs for recovery if compaction happens mid-task.
+
+**4. Constraint-Based Thinking**
+Express work as dependency relationships, not sequences:
+```bash
+bd create --title="Write tests for feature X"
+bd create --title="Implement feature X"
+bd dep add <tests-id> <feature-id>  # Tests depend on feature
+```
+Let `bd ready` discover what's unblocked rather than planning sequences.
+
+**5. Discovered Work Pattern**
+When finding new issues during active work, link them for traceability:
+```bash
+bd create --title="Bug: found during feature X" -t bug --deps discovered-from:<parent-id>
+```
+
+**6. Session End - "Landing the Plane"**
+Work is NOT complete until synced. Before ending a session:
+```bash
+bd close <completed-ids> --reason="What was done and why"
+bd sync                    # Commit and push beads changes
+git add <files>            # Stage code changes
+git commit -m "..."        # Commit code
+```
+
+**7. Troubleshooting**
+Debug variables when things go wrong:
+```bash
+BD_DEBUG=1 bd <command>        # General logging
+BD_DEBUG_SYNC=1 bd sync        # Sync issues
+BD_DEBUG_RPC=1 bd <command>    # Daemon communication
+```
+Run `bd doctor` to diagnose common problems.

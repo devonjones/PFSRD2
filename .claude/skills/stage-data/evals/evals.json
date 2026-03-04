@@ -1,0 +1,40 @@
+{
+    "skill_name": "stage-data",
+    "evals": [
+        {
+            "id": 1,
+            "prompt": "I just ran the parser and there are a bunch of unstaged changes in pfsrd2-data. Can you classify them and stage the safe ones?",
+            "expected_output": "Runs git_diff_classifier --summary, then git_stage_safe --dry-run, then git_stage_safe. Reports what was staged and what was skipped.",
+            "files": [],
+            "expectations": [
+                "Uses git_diff_classifier with --summary flag to show categorized overview",
+                "Uses git_stage_safe with --dry-run before actually staging",
+                "Does not use git add on a directory",
+                "Reports the number of files staged, skipped as unsafe, and skipped as unknown"
+            ]
+        },
+        {
+            "id": 2,
+            "prompt": "dwarf_general.json has both a trigger/effect merge (safe) and a broken text split (bug). Can you stage just the safe part?",
+            "expected_output": "Uses git_stage_intermediate with --apply-fn trigger_effect_merge to create an intermediate version that has only the safe changes, stages it, leaves the broken text split unstaged.",
+            "files": [],
+            "expectations": [
+                "Uses git_stage_intermediate or equivalent intermediate-version technique",
+                "Does not stage the entire file with git add",
+                "The broken text split change remains unstaged in the working tree",
+                "Explains what was staged vs what was left unstaged"
+            ]
+        },
+        {
+            "id": 3,
+            "prompt": "I found a new pattern in the diffs - several files have their image field changing from .png to .webp. Is this safe to stage?",
+            "expected_output": "Recognizes this as pattern P4 (image_rename, safe=true) from the pattern catalog, confirms it's safe, and offers to add it if it's not already there.",
+            "files": [],
+            "expectations": [
+                "References the pattern catalog (patterns.json)",
+                "Correctly identifies image rename as a safe pattern",
+                "Either confirms it's already cataloged or offers to add it"
+            ]
+        }
+    ]
+}
