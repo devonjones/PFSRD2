@@ -2,5 +2,6 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "server",
-  "dolt_database": "pfsrd2"
+  "dolt_database": "pfsrd2",
+  "project_id": "86f93ebf-eea3-49c1-8859-f2816bb8363a"
 }
