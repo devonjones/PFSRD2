@@ -277,7 +277,14 @@ Each has its own parser module and JSON schema.
 
 ## Task Management
 
-Beads issue tracking lives in `PFSRD2-Parser/.beads/` (NOT the top-level directory). Run all `bd` commands from within the `PFSRD2-Parser/` directory.
+This superrepo has **two** beads stores and they are not interchangeable.
+Choose by what the issue is about, not by where your shell happens to be.
+
+- **`.beads/` here — prefix `pfsrd2`.** Canonical for superrepo and cross-repo
+  work: infra, tooling, release plumbing, anything spanning more than one
+  subrepo. Run `bd` from this directory for those.
+- **`PFSRD2-Parser/.beads/` — prefix `PFSRD2-Parser`.** Parser work only. Run
+  `bd` from inside `PFSRD2-Parser/`.
 
 See `PFSRD2-Parser/CLAUDE.md` for beads usage details.
 
