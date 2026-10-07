@@ -59,6 +59,12 @@ backup/
 *.db-shm
 db.sqlite
 bd.db
+# Federation credential key (SECRET — must never be committed).
+# Encrypts stored federation peer credentials. This repo is PUBLIC and the key
+# sits untracked in .beads/, so without this pattern a single `git add -A`
+# publishes it — which is exactly how it reached the public PFSRD2-Parser repo.
+.beads-credential-key
+
 # NOTE: Do NOT add negation patterns here.
 # They would override fork protection in .git/info/exclude.
 # Config files (metadata.json, config.yaml) are tracked by git by default
