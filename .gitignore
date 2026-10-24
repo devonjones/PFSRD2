@@ -1,6 +1,8 @@
 PFSRD2-Parser
 pfsrd2-data
 pfsrd2-web
+pfsrd2-corpus
+pfsrd2-corpus-data
 pfsrd2-web.download.*.gz
 
 # Dolt database files (added by bd init)
