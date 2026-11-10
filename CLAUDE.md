@@ -93,20 +93,19 @@ When fixing a bug:
 
 ### Running Parsers
 
-Parser scripts are in `PFSRD2-Parser/bin/`. Common ones:
+Parser scripts are in `PFSRD2-Parser/bin/` and can be run from any directory:
 
 ```bash
-cd PFSRD2-Parser/bin
-./pf2_run_creatures.sh      # Parse all creatures/monsters
-./pf2_run_npcs.sh           # Parse all NPCs
-./pf2_run_traits.sh         # Parse all traits
-./pf2_run_conditions.sh     # Parse all conditions
-./pf2_run_skills.sh         # Parse all skills
-./pf2_run_monster_abilities.sh  # Parse monster abilities
-./pf2_run_sources.sh        # Parse source books
+PFSRD2-Parser/bin/pf2_run_creatures.sh      # Parse all creatures/monsters
+PFSRD2-Parser/bin/pf2_run_npcs.sh           # Parse all NPCs
+PFSRD2-Parser/bin/pf2_run_traits.sh         # Parse all traits
+PFSRD2-Parser/bin/pf2_run_conditions.sh     # Parse all conditions
+PFSRD2-Parser/bin/pf2_run_skills.sh         # Parse all skills
+PFSRD2-Parser/bin/pf2_run_monster_abilities.sh  # Parse monster abilities
+PFSRD2-Parser/bin/pf2_run_sources.sh        # Parse source books
 ```
 
-Scripts use config from `dir.conf` to locate web and data directories.
+Scripts auto-source `dir.conf` via `BASH_SOURCE` — no need to `cd bin/` first.
 
 ### Verifying Changes
 
@@ -119,6 +118,20 @@ git diff <file>             # Review specific changes
 ```
 
 **Important:** Only the files related to your fix should change. If you see unexpected changes, investigate before committing.
+
+**Check a completed run, not a mid-run snapshot.** A file can be written more than once in a single run (see below), so `git diff` while the parser is still going shows an intermediate state that is not the result.
+
+### Reprints: the newer AoN ID overrides
+
+When the same creature or item is reprinted in a different book, Archives of Nethys publishes a **new object with a new, higher `aonid`** instead of editing the old one. The newer object is **meant to supersede** the lower ID.
+
+The usual shape: a monster debuts in an adventure path, then a permanent version lands later in a bestiary or Monster Core — so the bestiary object has the higher ID and wins. It also happens the other way round (Boggard Scout is in Monster Core, 2024, ID 2856, and again in *Dawn of the Frogs*, 2025, ID 4000). The rule is **newer ID wins**, not "bestiary wins".
+
+Consequences when reading a diff:
+
+- **Two AoN pages writing the same output filename is designed behaviour, not a collision.** Both copies end up holding the newest object. That is correct.
+- **A file's directory names the book whose page produced the filename, not the book the surviving object came from.** `monsters/monster_core/boggard_scout.json` legitimately contains an object whose first source is *Dawn of the Frogs*. That mismatch is the override working.
+- Do not file this as non-determinism or data corruption. It has been reported as a bug twice and closed twice (`PFSRD2-Parser-q389`).
 
 ## Error Handling & Fast Iteration
 
@@ -137,16 +150,14 @@ Parser scripts have a two-file error system for fast iteration:
 6. **Delete the errors file** (`rm errors.pf2.<type>`) and run the full parser to catch any remaining issues across all files
 
 ```bash
-# Example: iterating on traits
-cd PFSRD2-Parser/bin
-source dir.conf
-bash pf2_run_traits.sh          # runs only errors.pf2.trait entries
+# Example: iterating on traits (run from any directory)
+PFSRD2-Parser/bin/pf2_run_traits.sh          # runs only errors.pf2.trait entries
 # fix code...
-mv errors.pf2.trait.log errors.pf2.trait   # promote failures
-bash pf2_run_traits.sh          # re-run just the failures
+mv PFSRD2-Parser/bin/errors.pf2.trait.log PFSRD2-Parser/bin/errors.pf2.trait
+PFSRD2-Parser/bin/pf2_run_traits.sh          # re-run just the failures
 # when clean:
-rm errors.pf2.trait             # remove seed file
-bash pf2_run_traits.sh          # full run against all files
+rm PFSRD2-Parser/bin/errors.pf2.trait        # remove seed file
+PFSRD2-Parser/bin/pf2_run_traits.sh          # full run against all files
 ```
 
 This is critical for parsers with many files (traits, creatures, equipment) where a full run takes minutes. Always use this pattern during development.
@@ -245,6 +256,16 @@ Each has its own parser module and JSON schema.
 - **Document edge cases** - If you handle a special case, comment why
 - **Keep schemas updated** - If JSON structure changes, update the schema files
 
+## Architecture
+
+When refactoring or creating implementation plans, move shared functions to universal/common modules rather than copying them. Always prefer DRY architecture — ask if unsure about the intended code organization.
+
+## Code Changes
+
+Never edit data files directly to fix data issues — always fix the parser/generator that produces the data. When in doubt, ask which layer to fix.
+
+**Never commit in pfsrd2-data unless explicitly asked.** The user reviews data changes manually to verify parser output matches expectations. Run parsers and report results, but leave staging and committing to the user.
+
 ## Interaction Principles: Be a Thought Partner
 
 **Critical feedback is expected.** Challenge assumptions and push back on decisions:
@@ -282,9 +303,13 @@ Choose by what the issue is about, not by where your shell happens to be.
 
 - **`.beads/` here — prefix `pfsrd2`.** Canonical for superrepo and cross-repo
   work: infra, tooling, release plumbing, anything spanning more than one
-  subrepo. Run `bd` from this directory for those.
-- **`PFSRD2-Parser/.beads/` — prefix `PFSRD2-Parser`.** Parser work only. Run
-  `bd` from inside `PFSRD2-Parser/`.
+  subrepo, and the pfsrd2-corpus repos. Run `bd` from this directory for those.
+- **`PFSRD2-Parser/.beads/` — prefix `PFSRD2-Parser`.** Parser, pfsrd2-data and
+  pfsrd2-web work. Run `bd` from inside `PFSRD2-Parser/`.
+
+pfsrd2-data, pfsrd2-web and the pfsrd2-corpus checkouts each carry an untracked
+`.beads/redirect` (excluded in `.git/info/exclude`) that points `bd` at the right
+store, so `bd` works from inside them. A fresh clone lacks it; run `bd where` to check.
 
 See `PFSRD2-Parser/CLAUDE.md` for beads usage details.
 
